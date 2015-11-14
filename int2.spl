@@ -1,0 +1,195 @@
+alias physicalSP S0;
+alias sysCallNo S1;
+alias filename S3;
+alias fatindex S4; 
+alias flag S5;
+alias sys_ft_index S6;
+
+physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+
+// Get system call no. from the stack and put it in a register
+
+sysCallNo = [physicalSP - 1];
+
+// Get arguments from stack and put it in registers
+
+filename = [physicalSP - 3];
+
+//---------------------------------------------------------------- 
+// calculating Pid of current running process
+	
+	alias currentPID S7;
+	currentPID = (PTBR - 1024) / 8; 
+
+	alias currentPCB S8;
+	currentPCB = READY_LIST + 32 * currentPID;
+
+//--------------------   OPEN SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+
+if(sysCallNo == 2) then
+	
+	//--------------------------------------
+	//Finding FAT entry of fname
+	
+	fatindex = 0;
+	
+	flag = -1;
+	
+	while(fatindex < 64) do
+		if([FAT + fatindex*8] == filename) then
+			flag = 0;
+			break;
+		endif;
+		fatindex = fatindex + 1;
+	endwhile;
+	
+	if(flag == -1) then // FILE not found ret -1;
+		print "File not found!!\n";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+
+	//----------------------------------------
+	//Finding if s/m wide open ft alredy has fname as entry
+	
+	flag = -1;
+	
+	sys_ft_index = 0;
+	
+	while(sys_ft_index < 64) do
+		if([FILE_TABLE + sys_ft_index*2] == fatindex) then
+			flag = 0; // sys_ft_index should contain index of s/m open ft
+			break;
+		endif;
+		sys_ft_index = sys_ft_index + 1;
+	endwhile;
+
+	//----------------------------------------	
+	// if fat entry not found in s/m open ft
+	// check for free entry in s/m open ft
+		
+	if(flag == -1) then
+	
+		flag = -1;
+		
+		sys_ft_index = 0;
+	
+		while(sys_ft_index < 64) do
+			if([FILE_TABLE + sys_ft_index*2] == -1) then
+				flag = 0; // sys should contain index of s/m open ft
+				break;
+			endif;
+			sys_ft_index = sys_ft_index + 1;
+		endwhile;
+	
+		if(flag == -1) then // no free entry found in sys_ft
+			print "Error in s/m FT";
+			[physicalSP - 2] = -1;
+			ireturn;
+		endif;
+		
+	endif;
+	
+
+	//------------------------------ 
+	//searching for free entries in process open FT
+	
+	alias fd S9;
+	fd = 0;
+	
+	flag = -1;
+	
+	while(fd < 8) do
+		if([currentPCB + 15 + fd*2 ] == -1) then
+			flag = 0;
+			break;
+		endif;
+		fd = fd+1;
+	endwhile;
+	
+	if(flag == -1) then
+		print "Error in process FT";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	//------------------------------------
+	//setting up process FT entry
+	
+	// fd has file descriptor index
+	
+	[currentPCB + 15 + fd*2 + 0] = sys_ft_index; // setting sys_ft_index in process FT
+	[currentPCB + 15 + fd*2 + 1] = 0;			 // set Lseek to zero
+
+
+	//-------------------------------------
+	//setting up s/m FT entries
+	
+	[FILE_TABLE + sys_ft_index*2 + 0] = fatindex; 						// Set the FAT Index field of the System Wide file table entry 
+	[FILE_TABLE + sys_ft_index*2 + 1] = [FILE_TABLE + sys_ft_index*2 + 1] + 1 ;		// Increment the File Open Count field in the s/m FT by 1
+	
+	// set return val as file descriptor 
+	[physicalSP - 2] = fd;
+	
+endif;	
+//-------------------------------------------------------------------
+
+//--------------------   CLOSE SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+
+if(sysCallNo == 3) then
+	
+	alias fd S3;
+	
+	//------------------------------
+	//Check if the argument fileDescriptor is valid
+	
+	if(fd>7 || fd < 0) then
+		print "fileDescriptor is invalid";
+		[physicalSP - 2] = -1; // 
+		ireturn;
+	endif;
+	
+	//-------------------------------
+	
+	//check if s/m wide open FT in fd is -1(invalid)
+	
+	sys_ft_index = [currentPCB + 15 + fd*2 ];
+	
+	if(sys_ft_index == -1) then
+		print "s/m FT index invalid";
+		[physicalSP - 2] = -1; // return failure 
+		ireturn;
+	endif;
+	
+	//---------------------------------
+	
+	// modify s/m wide FT
+	
+	[FILE_TABLE + 2*sys_ft_index + 1] = [FILE_TABLE + 2*sys_ft_index + 1] - 1; 	//reduce the # of files open count by 1
+	
+	if([FILE_TABLE + 2*sys_ft_index + 1] == 0) then  // if # above is  0 invalidate the FAT entry
+		[FILE_TABLE + 2*sys_ft_index] = -1;
+	endif; 
+	
+	//--------------------------------
+	
+	// modify per proc FT 	
+	
+	[currentPCB + 15 + fd*2 + 0] = -1;
+	[currentPCB + 15 + fd*2 + 1] = -1;
+	
+	//---------------------------------
+	
+	[physicalSP - 2] = 0; // sucess !!!	
+	
+endif;
+
+ireturn;
+
+//--------------------------------------------------------------------
+//IMPORTANT NOTE: Changes to any memory or file data structures are made 
+//only after all error conditions in the Open system call is checked.
+// Otherwise a file that failed to open will have its entries created. 
+//This is to be noted when you implement all other system calls also. 

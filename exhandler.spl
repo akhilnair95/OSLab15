@@ -1,0 +1,242 @@
+alias Cause S0;
+alias VPagenum S1;
+alias Ip_addr S2;
+alias i S3;
+alias flag S4;
+alias freePg S5;
+alias phyPgnum S6;
+alias physicalSP S7;
+
+Cause = EFR % 10;		// Gets value of cause field (size 1 char)
+VPagenum = (EFR / 10) % 100;    // Gets value of BadVAddr 
+Ip_addr = (EFR/1000);		//Gets value of IP at the point of exception
+
+//print "Exhandler";
+
+//-------------------------------------------------------------------
+
+//If Cause is a value other than 0 (page fault)
+
+if(Cause != 0) then
+	//display the cause of the error
+	
+	if(Cause == 1) then
+		print "Illegal Instruction";
+	endif;
+	
+	if(Cause == 2) then
+		print "Illegal Mem Acess";
+	endif;
+	
+	if(Cause == 3) then
+		print "Arithametic exception";
+	endif;
+	
+	if(Cause == 4) then
+		print "Illegal Operations";
+	endif;
+	
+	// Exit currently running process
+		
+			physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+			
+			[physicalSP - 1]  = 10;
+				
+			inline "JMP 11776"; // invoking interrupt routine
+endif;
+
+//-------------------------------------------------------------------
+
+// if non -exixting page acess (-1) then exit
+
+if([PTBR + 2*VPagenum] == -1) then
+	
+	print "Illegel mem acess";
+	
+	// Exit currently running process
+		
+			physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+			
+			[physicalSP - 1]  = 10;
+				
+			inline "JMP 11776"; // invoking interrupt routine
+
+endif;
+
+//-------------------------------------------------------------------
+
+	// allocate a free page by searching through the memory free list
+	
+	i = 0;
+	flag = -1;
+	
+	while(i < 64) do
+		if([MEM_LIST + i] == 0) then
+			flag = 0;
+			break;
+		endif;
+		i = i +1;
+	endwhile;
+	
+	if(flag == 0) then
+		freePg = i;
+		[MEM_LIST + freePg] = 1; //Set mem free list of freePg as occupied(1);
+	else
+		
+		// free page is not found
+		// follw a page repl algm to find free page
+			
+			//..............................................................
+			// Page Replacement - Second chance algorithm
+			
+			//print "Replacement";
+			
+			alias pagetable S15;
+			alias page S14;
+			
+			pagetable = PTBR + VPagenum * 2;	
+			
+			i = VPagenum;
+				
+			while(1 == 1) do
+				
+				i = (i+1) % 4;
+				
+				pagetable = pagetable + 2;
+				
+				// for circular traversal
+				if(pagetable >= PAGE_TABLE + (2 * PTLR * 32)) then
+						
+						pagetable = PAGE_TABLE;
+				endif;
+				
+				// skip stack												// Check if working
+				if(i == 3) then	
+					//print "r1";
+					continue;
+				endif;
+				
+				// skip invalid pages
+				if([pagetable + 1] == "00" || [pagetable + 1] == "10") then
+					//print "r2";
+					continue;
+				endif;
+				
+				page = [pagetable];
+				
+				// skip pages shared in mem
+				if([MEM_LIST + page] > 1) then
+					//print "r3";
+					continue;
+				endif;
+				
+				//if ref bit seen as 1 set it to 0 and continue
+				if([pagetable + 1] == "11") then
+					[pagetable + 1] = "01";
+					//print "r4";
+					continue;
+				endif;
+				
+				//Ref bit is 0 --> page to be replaced
+				break;
+				
+			endwhile;
+			
+			//......................................................
+		
+		//Swap out victim page
+		
+		// The mem copy Dfl is scanned for
+		//free block in swap area (448 - 511)
+		
+		i = 24;
+		
+		flag = -1;
+		
+		while(i < 512) do
+			
+			if([DISK_LIST + i] == 0) then
+				flag = 0;
+				break;
+			endif;
+			
+			i = i+1;
+		endwhile;
+		
+		if(flag == -1) then
+			print "Swap full";
+			print "Exiting";
+			
+			breakpoint;
+			
+			// Exit currently running process
+		
+			physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+			
+			[physicalSP - 1]  = 10;
+				
+			inline "JMP 11776"; // invoking interrupt routine
+
+		endif;
+		
+		//--------------------------------------------------------
+			
+		//store victim page in swap space
+		store(page,i);
+		
+		//increm dfl
+		[DISK_LIST + i] = 101;
+		
+		//The entry for the victim page in the Per-Process Page Table is updated
+		// with the address of this block in the swap area of the disk 
+		//and is set as invalid (Valid bit in the auxiliary information is set to 0).
+		
+		[pagetable] = i;
+		[pagetable + 1] = "00";
+		
+		freePg = page; 
+				
+	endif;
+
+	//-----------------------------------------------------------------
+	
+	phyPgnum = [PTBR + VPagenum * 2];
+	
+	//debug
+	if(phyPgnum < 21 || phyPgnum > 511) then
+		print "exh error 2";
+		halt;
+	endif;
+	
+	//load page to mem from disk
+	load(freePg , phyPgnum);
+	
+	// If swap page decr dfl entry for it
+	if([DISK_LIST + phyPgnum] > 100) then
+		[DISK_LIST + phyPgnum] = [DISK_LIST + phyPgnum] - 1;
+		if([DISK_LIST + phyPgnum] == 100) then
+			[DISK_LIST + phyPgnum] = 0;
+		endif;
+	endif;
+	
+	//Set the Physical Page Number corresponding to the VPagenum in the
+	//page table with the page number of memory page allocated and set
+	//the Auxiliary information as "11". (Referenced and Valid) 
+	
+	[PTBR + VPagenum*2] = freePg;
+	[PTBR + VPagenum*2 + 1] = "11";	
+	
+	//commit back dfl
+	store(6,20);
+	
+//-------------------------------------------------------------------
+
+//prepare for ireturn
+
+SP = SP + 1;
+
+physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+
+[physicalSP] = Ip_addr;
+
+ireturn;

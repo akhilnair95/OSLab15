@@ -1,0 +1,264 @@
+alias physicalSP S0;
+alias sysCallNo S1;
+alias filename S2;
+
+physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+
+// Get system call no. from the stack and put it in a register
+
+sysCallNo = [physicalSP - 1];
+
+// Get arguments from stack and put it in registers
+
+filename = [physicalSP - 3];
+
+
+//--------------------   CREATE SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+
+if(sysCallNo == 1) then
+	print "Create s/m call";	
+
+	alias i S3;
+	alias fatentry S4;
+	alias flag S5;
+	alias dfl S6;
+	
+	// Checking for filename in FAT
+	//-------------------------------
+
+	i = 1;
+	fatentry = FAT;
+
+	while(i <= 64) do
+		
+		if([fatentry + 2] != -1) then
+			if ([fatentry] == filename) then
+					print "File already created";
+					[physicalSP - 2 ] = 0;
+					ireturn;
+			endif;
+		endif;
+		
+		i = i+1;
+		fatentry = fatentry + 8;
+		
+	endwhile;
+
+
+	//Checking for free space in df list
+	//------------------------------------
+
+	dfl = 24;
+	flag = 0;
+
+	while(dfl < 512) do 
+		if([512*6 + dfl] == 0) then
+			flag = 1;
+			break;
+		endif;	
+		dfl= dfl+1;
+	endwhile;
+
+
+	if(flag == 0) then				// No free disk found so return -1
+		print "No free disk found";
+		[physicalSP - 2 ] = -1;
+		ireturn;
+	endif;
+
+	// dfl has free disk numbr;
+
+
+	// Checking for freespace in FAT
+	//-------------------------------
+
+	i = 1;
+	fatentry = FAT;
+	flag = 0;
+
+	while(i <= 64) do
+		
+		if([fatentry + 2] == -1) then
+			flag = 1;
+			break;
+		endif;
+		
+		i = i+1;
+		fatentry = fatentry + 8;
+
+	endwhile;
+
+
+	if(flag == 0) then				// No free fat entry found so return -1
+		print "No free fat entry found";
+		[physicalSP - 2 ] = -1;
+		ireturn;
+	endif;
+
+	[fatentry] = filename;
+	[fatentry + 1] = 0;
+	[fatentry + 2] = dfl;
+
+	// Load basic block to scratchpad set val to -1 and store back
+
+	load(1,dfl); 
+
+	i=0;
+
+	while(i < 256) do
+		[512 + i] = -1;
+		i = i+1;
+	endwhile;
+
+	store(1,dfl);
+
+	// making dfl entry of basic block to 1
+	[512*6 + dfl] = 1;
+
+	// storing back dfl and fat to disk
+	store(5,19);
+	store(6,20);
+
+	[physicalSP - 2 ] = 0;
+	
+endif;
+
+//--------------------   DELETE SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+
+// The delete system call will only work if the file exists, and it is not opened by any process
+
+if(sysCallNo == 4) then
+	print "Del s/m call";	
+	alias fatindex S4;
+	alias flag S5;
+	
+	//--------------------------------------
+
+	//Check if the file to be deleted exists in the disk
+	fatindex = 0;
+	
+	flag = -1;
+	
+	while(fatindex < 64) do
+		if([FAT + fatindex*8] == filename) then
+			flag = 0;
+			break;
+		endif;
+		fatindex = fatindex + 1;
+	endwhile;
+	
+	//1
+
+	
+	if(flag == -1) then // FILE not found ret -1;
+		print "File not found!!\n";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	//--------------------------------------
+	
+	//Search the System Wide Open File Table to see if the file has been opened
+	
+	alias sys_ft_index S6;
+
+	flag = -1;
+	
+	sys_ft_index = 0;
+	
+	while(sys_ft_index < 64) do
+		if([FILE_TABLE + sys_ft_index*2] == fatindex) then
+			flag = 0; // sys_ft_index should contain index of s/m open ft
+			break;
+		endif;
+		sys_ft_index = sys_ft_index + 1;
+	endwhile;
+	
+	if(flag == 0) then // FILE has been opened
+		print "Error File opened \n";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	//2
+
+	
+	//--------------------------------------
+	alias b_bl S6;
+	alias i S7;
+	
+	b_bl = [FAT + fatindex*8 + 2]; // basic block #
+	load(1,b_bl);	//Load the Basic Block to the Scratchpad
+	
+	// These data blocks set as unused in the memory copy of the Disk Free List
+	
+	i = 0;
+
+	alias bl S15;
+	alias j S14;
+
+	 
+	while( i < 256) do
+		
+		if([512 + i] != -1 && [512 + i] != "") then 	// if there is valid data block
+			bl = [512 + i];
+			
+			load(1,bl);				//Load the i th data block from disk to the scratchpad. 
+						
+			j = 0;				//Erase all values in the data file, by storing ""(empty string) in every word.
+			
+			while(j < 512) do
+				[512 + j] = "";
+				j = j+1;
+			endwhile;
+			
+			//Store back the data block to the disk from the scratchpad
+			store(1,bl);
+			
+			[DISK_LIST + bl] = 0;						// data block set as unused in the mem copy of the Disk Free List
+		endif;
+		
+		load(1,b_bl);
+		
+		i = i + 1;	
+	endwhile;
+	
+	//4
+	
+	
+	//Erase all vallues of the basic block of the file, by storing "" (empty stirng) to every word
+	
+	i = 0;
+	
+	load(1,b_bl);
+	
+	while( i < 256) do
+		[512+i] = "";
+		i = i+1;
+	endwhile;
+	
+	store(1,b_bl);
+	
+	//Set the entry for the basic block of the file in the Disk Free List to 0 (unused)	
+	[DISK_LIST + b_bl] = 0;
+	
+	//Invalidate the FAT entry by setting -1 in the filename filed and Basic Block Number field.
+	
+	[FAT + fatindex * 8 ] = -1;
+	[FAT + fatindex * 8 + 2] = -1;
+	[FAT + fatindex * 8 + 1] = 0;
+	
+	//last
+	
+	
+	//Store back the FAT and Disk Free List from the memory to the disk
+	store(5,19); // storing FAT
+	store(6,20); // store DFL
+
+	[physicalSP - 2 ] = 0; // return val 0 -> indic sucess
+	
+endif;
+
+ireturn;

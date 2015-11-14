@@ -1,0 +1,320 @@
+alias physicalSP S0;
+alias sysCallNo S1;
+alias i S2;
+alias flag S3;
+alias currentPCB S4;
+alias newPID S5;
+alias currentPID S6;
+alias newPCB S7;
+alias old_pg S8;
+alias newPTBR S9;
+alias aux S10;
+
+physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+sysCallNo = [physicalSP -1];
+
+currentPID = (PTBR - 1024) / 8; 
+currentPCB = READY_LIST + 32 * currentPID;
+
+//-------------------- FORK SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+
+if(sysCallNo == 8) then
+
+	//print "Fork s/m call";	
+	i = 0;
+	flag = -1;
+	
+	while(i < 32) do
+		if([READY_LIST + i*32 + 1] == 0) then
+			flag = 0;
+			break;
+		endif;
+		i = i+1;
+	endwhile;
+	
+	if(flag == -1) then
+		print "PCB Full!!";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	newPCB = READY_LIST + i * 32;
+
+	newPID = i; 					//Set the PID field of the PCB as the index within the ready list 		
+	
+	// Find the per-process page table of the new child process
+	newPTBR = PAGE_TABLE + newPID * 8;
+	
+	//----------------------------------------------------------
+	
+	// The mem free list is checked to find 1 free page for the stack.
+	
+	alias freePg S15;
+	
+	freePg = 0;	
+	flag = -1;
+		
+	while(freePg < 64) do
+				
+		if([MEM_LIST + freePg] == 0) then
+			flag = 0;
+			break;
+		endif;
+		freePg = freePg+1;
+		
+	endwhile;
+			
+	if(flag== -1) then
+	
+		//print "Stack swap";
+		
+		// NO mem for stack . Allot by swapping
+		//...........................................................................................
+		
+		// follw a page repl algm to find free page
+			
+			//..............................................................
+			// Page Replacement - Second chance algorithm
+			
+			alias pagetable S14;
+			alias page S13;
+			
+			pagetable = newPTBR + 2 *(PTLR - 1);	
+			
+			i = PTLR - 1;
+				
+			while(1 == 1) do
+				
+				i = (i+1) % PTLR;
+				
+				pagetable = pagetable + 2;
+				
+				// for circular traversal
+				if(pagetable >= PAGE_TABLE + (2 * PTLR * 32)) then
+						
+						pagetable = PAGE_TABLE;
+				endif;
+				
+				// skip stack												
+				if(i == PTLR - 1) then	
+					//print "r1";
+					continue;
+				endif;
+				
+				// skip invalid pages
+				if([pagetable + 1] == "00" || [pagetable + 1] == "10") then
+					//print "r2";
+					continue;
+				endif;
+				
+				page = [pagetable];
+				
+				// skip pages shared in mem
+				if([MEM_LIST + page] > 1) then
+					//print "r3";
+					continue;
+				endif;
+				
+				//if ref bit seen as 1 set it to 0 and continue
+				if([pagetable + 1] == "11") then
+					[pagetable + 1] = "01";
+					//print "r4";
+					continue;
+				endif;
+				
+				//Ref bit is 0 --> page to be replaced
+				break;
+				
+			endwhile;
+			
+			//......................................................
+		
+		
+		//Swap out victim page
+		
+		// The mem copy Dfl is scanned for
+		//free block in swap area (448 - 511)
+		
+		i = 24;
+		
+		flag = -1;
+		
+		while(i < 512) do
+			
+			if([DISK_LIST + i] == 0) then
+				flag = 0;
+				break;
+			endif;
+			
+			i = i+1;
+		
+		endwhile;
+		
+		if(flag == -1) then
+			
+			print "Swap full";
+			print "Exiting";
+			
+			// Exit currently running process
+			
+			inline "MOV R0, 10";	// Pushing system call number = 10
+			inline "PUSH R0";		// ...
+			inline "PUSH R0" ;	// Pushing a garbage val for IP+2			
+			inline "JMP 11776"; // invoking interrupt routine
+
+		endif;
+		
+		//--------------------------------------------------------
+			
+		//store victim page in swap space
+		store(page,i);
+		
+		//increm dfl
+		[DISK_LIST + i] = 101;
+		
+		//The entry for the victim page in the Per-Process Page Table is updated
+		// with the address of this block in the swap area of the disk 
+		//and is set as invalid (Valid bit in the auxiliary information is set to 0).
+		
+		[pagetable] = i;
+		[pagetable + 1] = "00";
+		
+		freePg = page; 
+		
+		
+		
+		//...........................................................................................
+	endif;
+	
+	// setting entry to 1 in mem free list (used for stack)
+	[MEM_LIST + freePg] = 1;
+	
+	//----------------------------------------------------------
+	
+	//The stack of parent copied word-by-word to the stack page of child
+	
+	old_pg = [PTBR + 2*(PTLR - 1)];
+	
+	i = 0;
+	
+	while(i < 512) do	
+		[freePg * 512 + i] = [old_pg * 512 + i];
+		i = i+1;
+	endwhile;
+	
+	//----------------------------------------------------------
+
+	//Set page table entries for stack of child
+	
+	[newPTBR + 2*(PTLR - 1)] = freePg;
+	[newPTBR + 2*(PTLR - 1) + 1] = "01";
+	
+	//----------------------------------------------------------
+
+	//Copy the page table of the parent to child except stack
+	
+	i = 0;
+	
+	while(i < PTLR - 1) do
+	
+		[newPTBR + i*2] = [PTBR + i*2];
+		[newPTBR + i*2 +1] = [PTBR + i*2 + 1];
+		
+		aux = [newPTBR + i*2 + 1];
+		old_pg =  [newPTBR + i*2];
+		
+		if([newPTBR + i*2] != -1 ) then
+			
+			//valid code page in memory .increment the mem free list by 1.
+			
+			if( (aux == "01") || (aux == "11") )then
+					[MEM_LIST + old_pg] = [MEM_LIST + old_pg] + 1;				
+			endif;
+			
+			
+			if( (aux == "00") || (aux == "10") )then
+					
+					//If Code page in Swap area. Increm DFL by 1; 
+					
+					if([DISK_LIST + old_pg] > 100) then
+							[DISK_LIST + old_pg] = [DISK_LIST + old_pg ] + 1;
+					endif;
+			endif;
+				
+		endif; 
+		
+		i= i + 1;
+	endwhile;
+	
+	//Commit DFL back to memory
+	store(6,20); 
+	
+	
+	//----------------------------------------------------------
+	
+	// Setting values in PCB of child process
+	
+	[newPCB] = newPID;
+	
+	// Set the STATE field in the PCB of the child process as READY.
+	[newPCB + 1] = 1;
+
+	[newPCB + 2] = BP;
+	[newPCB + 3] = SP - 1;		// dec SP and set
+	
+	[newPCB + 4] = [physicalSP] ; // set IP	
+	[newPCB + 5] = newPTBR;		// set PTBR in child PCB
+
+	[newPCB + 6] = PTLR;
+	
+	// copy R0 to R7.
+	
+	[newPCB + 7] = R0;
+	[newPCB + 8] = R1;
+	[newPCB + 9] = R2;
+	[newPCB + 10] = R3;
+	[newPCB + 11] = R4;
+	[newPCB + 12] = R5;
+	[newPCB + 13] = R6;
+	[newPCB + 14] = R7;
+	
+	//The Per-Process Open File table of the parent process is copied to child's PCB
+	
+	i = 0;
+	
+	alias tmp S15;
+	
+	while(i<8) do
+		
+		[newPCB + i*2 + 15] = [currentPCB + i*2 + 15];
+		[newPCB + i*2 + 15+ 1] = [currentPCB + i*2 + 15 + 1];
+		
+		// increment the File Open Count in sys FT
+		
+		if([newPCB + i*2 + 15] != -1) then
+			//print "inc";
+			tmp = FILE_TABLE + [newPCB + i*2 + 15] + 1;
+			[tmp] = [tmp] +1;
+		endif;
+		
+		i = i+1;	
+	endwhile;	
+	
+	[newPCB + 31] = currentPID;
+	
+	[physicalSP - 2] =  newPID; // the PID for the child process ret val for parnt
+	
+	//The value -2 is stored in the return value space 
+	//of the stack of the child process
+	
+	alias newPhysicalSP S15;
+	newPhysicalSP = ([newPTBR + 2 * ((SP-1) / 512)] * 512) + ((SP-1) % 512);
+	
+	[newPhysicalSP - 1] = -2;
+	
+	//-----------------------------------------------------------------------------
+	
+endif;
+
+ireturn;

@@ -1,0 +1,159 @@
+alias physicalSP S0;
+alias sysCallNo S1;
+alias filename S2;
+
+physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+
+// Get system call no. from the stack and put it in a register
+
+sysCallNo = [physicalSP - 1];
+
+// Get arguments from stack and put it in registers
+alias fd S3;
+alias wordToWrite S4;
+
+fd = [physicalSP - 4];
+wordToWrite = [physicalSP - 3];
+
+//---------------------------------------------------------------- 
+// calculating Pid of current running process
+	
+	alias currentPID S5;
+	currentPID = (PTBR - 1024) / 8; 
+
+	alias currentPCB S6;
+	currentPCB = READY_LIST + 32 * currentPID;
+
+//--------------------   WRITE SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+
+if(sysCallNo == 5) then
+	print "Write s/m call";	
+
+	// check if fileDescriptor specified as argument is invalid. 
+	
+	if(fd < 0 || fd > 7) then
+		print "Arg invalid";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	alias sys S7;
+	alias lseek S8;
+	
+	//----------------------------------------------
+
+	//Index into the per-process open file table with the fileDescriptor
+	
+	sys = [currentPCB + 15 + fd*2 ];
+	
+	//store the Pointer to LSEEK position field in registers
+	
+	lseek = [currentPCB + 15 + fd*2 + 1];
+	
+		
+	// If the entry is invalid (-1 in the first field of the entry)  return -1 failure
+	
+	if(sys == -1) then
+		print "Sys ft error!!";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	//----------------------------------------------
+
+	alias fatindex S9;
+	
+	// Using the Pointer , index to the System Wide Open File Table to get the FAT Index field
+
+	fatindex = [FILE_TABLE + sys*2];
+	
+	alias b_bl S10;
+	
+	//Using the FAT Index, fetch the Basic Block from the FAT and load it to the scratchpad.
+
+	b_bl = [FAT + fatindex*8 + 2];
+	
+	load(1,b_bl);
+	
+	//The LSEEK position / 512 gives the index of the basic block entry
+
+	alias write_bl S11;
+	
+	write_bl = [512 + lseek/512];
+	
+	//--------------------------------------------------------------------
+	
+	//If this entry is invalid indicated by -1, then allocate a new block 
+	
+	if(write_bl == -1) then
+		
+		alias i S12;
+		alias flag S13;
+		flag = -1;
+		
+		i = 24;
+		
+		//scan dfl for a free entry
+		
+		while(i < 512) do	
+			if([DISK_LIST + i] == 0) then
+				flag = 0;
+				break;
+			endif;
+			i = i+1;
+		endwhile;
+			
+			// if no free entry found
+			
+		if(flag == -1) then
+			print "write error";
+			[physicalSP - 2] = -1;
+			ireturn;
+		endif;
+			
+		//  set 1 in the entry for the free block in the Disk Free List
+		[DISK_LIST + i] = 1;
+			
+		//Add this block number to the basic block of the file.
+		[512 + lseek/512] = i;
+			
+		//Commit the basic block from scratchpad back to the disk. 
+		store(1,b_bl);
+			
+		//Increment the file size in the FAT entry by 512
+			
+		[FAT + fatindex*8 + 1] = [FAT + fatindex*8 + 1] + 512;
+			
+		//Commit the FAT and Disk Free List from the memory to the disk
+		store(5,19);
+		store(6,20);
+			
+		write_bl = i; 			
+		
+	endif;
+		
+	//--------------------------------------------------------------------		
+	
+	//Fetch the block from the disk to the scratchpad.
+	
+	load(1,write_bl);
+	
+	//Write the argument wordToWrite to this block loaded in the scratchpad at the seek position or offset
+	
+	
+	[512 + lseek % 512] = wordToWrite;
+	
+	//Store this block back to disk.
+	store(1,write_bl);
+	
+	//Increment LSEEK Position by 1 in the Per-Process Open File Table
+
+	[currentPCB + 15 + fd*2 + 1 ] = [currentPCB + 15 + fd*2 + 1 ] + 1; 
+	
+	[physicalSP - 2] = 0;  // sucess!!	
+	
+endif;
+
+	
+ireturn;

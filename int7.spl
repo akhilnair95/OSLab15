@@ -1,0 +1,241 @@
+alias currentPID S0;
+alias currentPCB S1;
+alias physicalSP S2;
+alias i S3;
+alias flag S4;
+alias sysCallNo S5;
+alias newPCB S6;
+alias newphysicalSP S7;
+
+physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+sysCallNo = [physicalSP -1];
+
+currentPID = (PTBR - 1024) / 8; // calculating Pid of current running process
+currentPCB = READY_LIST + 32 * currentPID;
+
+
+//-------------------------------------------------------------------------------------------
+
+if(sysCallNo == 10) then
+
+	alias aux S8;
+	alias old_pg S9; 
+	alias succid S10;
+	alias j S11;
+	alias stackMem S12;
+	
+	//----------------------------------------------------------------------------
+	//							EXIT S/M Call
+	//----------------------------------------------------------------------------	
+	
+	//print "Exit";
+	
+	//-----------------------------------------------------------------
+	
+	stackMem = [PTBR + 6];
+	
+	// The entries of valid pages occupied by this process in the 
+	// memory free list and dfl(swap space) must decremented 
+	// Invalidate all entries in its per-process page table
+	
+	i = 0;
+
+	while(i<PTLR-1) do
+		
+		aux = [PTBR + 2*i + 1]; 
+			
+		if([PTBR + 2*i] != -1) then
+				
+				old_pg = [PTBR + 2*i];
+				
+				//If valid pg in mem , decrem mem free list
+				if(aux == "01" || aux == "11") then
+					[MEM_LIST + old_pg] = [MEM_LIST + old_pg] - 1;	
+				endif;
+				
+				// Page in swap area decrem dfl
+				if(aux == "00" || aux == "10") then
+					if([DISK_LIST + [PTBR +2*i]] > 100) then
+					
+						[DISK_LIST + old_pg] = [DISK_LIST + old_pg] - 1;
+						
+						if([DISK_LIST + old_pg] == 100) then
+							[DISK_LIST + old_pg] = 0;
+						endif;	
+					
+					endif;
+				endif;
+			
+		endif;		
+		
+		[PTBR + i*2] = -1;		
+		[PTBR + i*2 + 1] = "00";
+	
+		i = i+1;
+		
+	endwhile;
+
+	//Commit dfl back 
+	store(6,20); 
+
+	succid = [currentPCB] / 1000;
+	
+	//-----------------------------------------------------------------
+	// Modified code
+	
+	if(succid != 0) then
+	
+		succid = succid - 1;	
+		
+		//------------------------------------------------------------
+		// swap in PCB and page table	
+		
+		i = succid;
+		
+		i = i % 64;
+		
+		load(1,510+(succid/64));
+		
+		j = 0;
+		
+		while(j<8) do
+			[PTBR + j] = [512 + i*8 + j] ;
+			[512 + i*8 + j] = -2;
+			j = j+1;
+		endwhile;
+		
+		store(1,510+(succid/64));	
+						
+		//-------------------------------------------
+		// load PCB
+	
+		i = succid% 16;
+		
+		load(1,502+(succid/16));
+		
+		j = 0;
+		
+		while(j<32) do
+			[currentPCB + j] = [512 + i*32 + j] ;
+			[512 + i*32 + j] = "";
+			j = j+1;
+		endwhile;
+		
+		store(1,502+(succid/16));
+		
+		//Setting context from PCB
+		// setting context values from pcb
+
+		BP = [ currentPCB + 2 ];
+		SP = [ currentPCB + 3 ];
+
+		//set the values of regs from pcb
+
+		R0 = [ currentPCB + 7 ];
+		R1 = [ currentPCB + 8 ];
+		R2 = [ currentPCB + 9 ];
+		R3 = [ currentPCB + 10 ];
+		R4 = [ currentPCB + 11 ];
+		R5 = [ currentPCB + 12 ];
+		R6 = [ currentPCB + 13 ];
+		R7 = [ currentPCB + 14 ];
+		
+		load(stackMem,[PTBR + 6]);
+		
+		// If swap page decr dfl entry for it
+		if([DISK_LIST + [PTBR + 6]] > 100) then
+			[DISK_LIST + [PTBR + 6]] = [DISK_LIST + [PTBR + 6]] - 1;
+			if([DISK_LIST + [PTBR + 6]] == 100) then
+				[DISK_LIST + [PTBR + 6]] = 0;
+			endif;
+		endif;
+		
+		[PTBR + 6] = stackMem;
+		[PTBR + 7] = "01";
+		
+		SP = SP + 1;
+		
+		physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+		
+		[ physicalSP ] = [ currentPCB + 4 ]; // Stores IP field value of PCB on the stack
+		
+		ireturn;
+		
+	endif;
+
+
+	//-----------------------------------------------------------------	
+	
+	old_pg = [PTBR + 6];
+				
+	//If valid pg in mem , decrem mem free list
+		[MEM_LIST + old_pg] = 0;	
+				
+	[PTBR + 7] = "00";
+	
+	//Set the STATE in the PCB to 0
+	[currentPCB + 1] = 0;
+	
+	
+	// Finding next ready process
+	//------------------------------------
+	
+	i = 1;
+	newPCB = currentPCB;
+	flag = -1;
+
+	while( i <= 32 ) do
+		newPCB = newPCB + 32;
+		
+		if(newPCB > 2559) then
+			newPCB = 1536;
+		endif;
+		
+		if([newPCB + 1] == 1) then
+			flag = 0;
+			break;
+		endif;
+		
+		i = i+1;
+				
+	endwhile;
+
+	if(flag == -1) then
+		print "Proc over";
+		halt;
+	endif;
+
+	
+	//Schedule this process for execution by loading the registers from the PCB 
+	//as done in Stage 6 for the timer interrupt routine
+
+	// setting context values from pcb
+
+	BP = [ newPCB + 2 ];
+	SP = [ newPCB + 3 ];
+	PTBR = [ newPCB + 5 ];
+	PTLR = [ newPCB + 6 ];
+
+
+	//set the values of regs from pcb
+
+	R0 = [ newPCB + 7 ];
+	R1 = [ newPCB + 8 ];
+	R2 = [ newPCB + 9 ];
+	R3 = [ newPCB + 10 ];
+	R4 = [ newPCB + 11 ];
+	R5 = [ newPCB + 12 ];
+	R6 = [ newPCB + 13 ];
+	R7 = [ newPCB + 14 ];
+
+	SP = SP + 1;
+	
+	newphysicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+	[ newphysicalSP ] = [ newPCB + 4 ]; // Stores IP field value of PCB on the stack
+
+	//set state of process as running in its PCB
+	[ newPCB + 1 ] = 2;
+
+endif;
+
+ireturn;

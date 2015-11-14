@@ -1,0 +1,193 @@
+alias physicalSP S0;
+alias sysCallNo S1;
+alias filename S2;
+
+physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+
+// Get system call no. from the stack and put it in a register
+
+sysCallNo = [physicalSP - 1];
+
+//---------------------------------------------------------------- 
+// calculating Pid of current running process
+	
+	alias currentPID S5;
+	currentPID = (PTBR - 1024) / 8; 
+
+	alias currentPCB S6;
+	currentPCB = READY_LIST + 32 * currentPID;
+
+//--------------------   SEEK SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+
+if(sysCallNo == 6) then
+	print "Seek s/m call";
+	
+	// Get arguments from stack and put it in registers
+	alias fd S3;
+	alias newLseek S4;
+
+	fd = [physicalSP - 4];
+	newLseek = [physicalSP - 3];
+	
+	// check if fileDescriptor specified as argument is invalid. 
+	
+	if(fd < 0 || fd > 7) then
+		print "Arg invalid";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	alias sys S7;
+	alias lseek S8;
+	
+	//----------------------------------------------
+
+	//Index into the per-process open file table with the fileDescriptor
+	
+	sys = [currentPCB + 15 + fd*2 ];
+	
+	//store the Pointer to LSEEK position field in registers
+	
+	lseek = [currentPCB + 15 + fd*2 + 1];
+		
+	// If the entry is invalid (-1 in the first field of the entry)  return -1 failure
+	
+	if(sys == -1) then
+		print "Sys ft error!!";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	//----------------------------------------------
+
+	alias fatindex S9;
+	
+	// Using the Pointer , index to the System Wide Open File Table to get the FAT Index field
+
+	fatindex = [FILE_TABLE + sys*2];
+	
+	alias fileSize S10;
+	
+	fileSize = [FAT + fatindex*8 + 1];
+	
+	//----------------------------------------------
+
+	//LSEEK position is valid if it takes a value from 0 to file size
+
+	if(newLseek != 0) then
+		newLseek = lseek + newLseek;
+	endif;
+	
+	if(newLseek < 0 || newLseek > fileSize) then
+		print "Invalid Lseek posn";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	//Change the LSEEK in the per-process file table to newLseek
+	
+	[currentPCB + 15 + fd*2 + 1 ] = newLseek;
+	
+	[physicalSP - 2] = 0;
+		
+endif;
+
+
+//--------------------   READ SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+
+
+if(sysCallNo == 7) then
+
+	print "Read s/m call";	
+
+	// Get arguments from stack and put it in registers
+	alias fd S3;
+	alias wordRead S4;
+
+	fd = [physicalSP - 4];
+	wordRead = [physicalSP - 3];
+	
+	// check if fileDescriptor specified as argument is invalid. 
+	
+	if(fd < 0 || fd > 7) then
+		print "Arg invalid";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	alias sys S7;
+	alias lseek S8;
+	
+	//----------------------------------------------
+
+	//Index into the per-process open file table with the fileDescriptor
+	
+	sys = [currentPCB + 15 + fd*2 ];
+	
+	//store the Pointer to LSEEK position field in registers
+	
+	lseek = [currentPCB + 15 + fd*2 + 1];
+	
+		
+	// If the entry is invalid (-1 in the first field of the entry)  return -1 failure
+	
+	if(sys == -1) then
+		print "Sys ft error!!";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	//----------------------------------------------
+
+	alias fatindex S9;
+	
+	// Using the Pointer , index to the System Wide Open File Table to get the FAT Index field
+
+	fatindex = [FILE_TABLE + sys*2];
+	
+	alias b_bl S10;
+	
+	//Using the FAT Index, fetch the Basic Block from the FAT and load it to the scratchpad.
+
+	b_bl = [FAT + fatindex*8 + 2];
+	
+	load(1,b_bl);
+	
+	if(lseek >= [FAT+fatindex*8+1]) then
+		print "EOF reached!!";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	//The LSEEK position / 512 gives the index of the basic block entry
+
+	alias read_bl S11;
+	
+	read_bl = [512 + lseek/512];
+	
+	//--------------------------------------------------------------------
+	
+		
+	//--------------------------------------------------------------------		
+	
+	//Fetch the block from the disk to the scratchpad.
+	
+	load(1,read_bl);
+	
+	//Write the argument wordToWrite to this block loaded in the scratchpad at the seek position or offset
+	
+	
+	[physicalSP - 3] = [512 + lseek % 512];
+	
+	
+	//Increment LSEEK Position by 1 in the Per-Process Open File Table
+
+	[currentPCB + 15 + fd*2 + 1 ] = [currentPCB + 15 + fd*2 + 1 ] + 1; 
+	
+	[physicalSP - 2] = 0;  // sucess!!	
+	
+endif;
+
+ireturn;

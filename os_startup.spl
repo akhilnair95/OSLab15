@@ -1,0 +1,199 @@
+print "LOADING XOS"; 
+
+alias i S0;
+
+//----------------------------------------------------------
+
+load(5,19); // loading FAT
+load(6,20); // load DFL
+
+//---------------------------------------------------------
+
+// Clear Dfl of old swap space
+// and store back
+
+i = 24;
+
+while(i < 512) do
+	if([DISK_LIST + i] > 100) then		// swap region
+		[DISK_LIST + i] = 0;
+	endif;
+	i =i + 1;
+endwhile;
+
+// set used for PCB and PT swap
+
+i = 502;
+
+while(i < 512) do
+	[DISK_LIST + i] = 1;
+	i = i+1;
+endwhile;
+
+store(6,20);
+
+//Clear Page table Swap
+i = 0;
+
+while(i < 512) do
+	[1536 + i] = -2;
+	i = i + 1;
+endwhile;
+
+store(3,510);
+store(3,511);
+
+i = 0;
+while(i < 512) do
+	[1536 + i] = "";
+	i = i + 1;
+endwhile;
+
+i = 502;
+while(i < 510) do
+	store(3,i);
+	i = i + 1;
+endwhile;
+
+//--------------------------------------------------------
+
+// In s/m wide open file table (FILE_TABLE)
+// set all FAT pointers to invalid(-1)
+// set all file open counts to 0
+
+i = 0;
+
+while(i < 64) do
+	[FILE_TABLE + i*2] = -1;
+	[FILE_TABLE + i*2 + 1] = 0;
+	i = i + 1;
+endwhile;
+
+//---------------------------------------------------------
+
+// set values in per process FT of init to -1
+
+alias fd S15;
+alias start S14;
+
+fd = 0;
+start = READY_LIST + 15;
+
+while(fd < 8) do
+	[start + 2*fd + 0] = -1; // ref to s/m wide open ft
+	[start + 2*fd + 1] = -1; // Lseek posn
+	fd = fd + 1;
+endwhile;
+
+
+//----------------------------------------------------------
+// Initialize all PCBs with STATE field 0
+
+i = 0;
+
+while(i<32) do
+	[READY_LIST + i*32 +1] = 0;
+	i = i+1;
+endwhile;
+
+//----------------------------------------------------------
+
+// Setting up Memory Free list
+
+i = MEM_LIST;
+
+while(i < MEM_LIST + 25) do
+	[i] = 1;
+	i = i + 1;
+endwhile;
+
+while(i < MEM_LIST + 64) do
+	[i] = 0;
+	i = i+1;
+endwhile;
+
+//----------------------------------------------------------
+
+//Setting up page tables
+i = PAGE_TABLE;
+
+while(i < 1280) do
+	[i] = -1;
+	[i+1] = "00";
+	i = i+2;
+endwhile;
+
+//----------------------------------------------------------
+// load exhandler & interrupts to memory
+
+// loading exception handler
+load (7,1);
+load (8,2);
+
+
+//Load Timer
+load(9,3);
+load(10,4);
+
+// Load INT1
+load (11,5);
+load (12,6);
+
+// Load INT2
+load (13,7);
+load (14,8);
+
+// Load INT3
+load (15,9);
+load (16,10);
+
+// Load INT4
+load (17,11);
+load (18,12);
+
+// Load INT5
+load (19,13);
+load (20,14);
+
+// Load INT6
+load (21,15);
+load (22,16);
+
+// Load INT7
+load (23,17);	
+load (24,18);
+
+//----------------------------------------------------------
+
+// set up INIT process
+
+PTBR = 1024;
+PTLR = 4;
+
+[READY_LIST + 0] = 0; // set pid of init to 0;
+[READY_LIST + 1] = 2; // state in PCB to running
+
+
+[PTBR + 0] = 21; // Physical Page Number for Logical Page 0
+[PTBR + 1] = "00"; // Auxiliary Information for Logical Page 0
+
+[PTBR + 2] = 22; // Physical Page Number for Logical Page 0
+[PTBR + 3] = "00"; // Auxiliary Information for Logical Page 0
+
+[PTBR + 4] = 23; // Physical Page Number for Logical Page 0
+[PTBR + 5] = "00"; // Auxiliary Information for Logical Page 0
+
+[PTBR + 6] = 25; // Physical Page Number for Logical Page 3 (Stack)
+[PTBR + 7] = "01"; // Auxiliary Information for Logical Page 3 (Stack)
+
+SP = 3 * 512;
+
+[READY_LIST + 31] = 0; // Set parent of init to itself, ie 0
+
+[MEM_LIST + 25] = 1;
+
+//---------------------------------------
+
+[25 * 512] = 0; // Set up the IP value for INIT in the stack
+
+ireturn;

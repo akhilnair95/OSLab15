@@ -1,0 +1,308 @@
+alias physicalSP S0;
+alias sysCallNo S1;
+alias i S2;
+alias flag S3;
+alias currentPCB S4;
+alias currentPID S5;
+
+alias filename S6;
+alias newfat S7;
+
+alias newPgNum S8;
+alias old_pg S9;
+
+alias aux S10;
+
+alias j S11;
+ 
+alias stackMem S12;
+
+physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+sysCallNo = [physicalSP -1];
+
+currentPID = (PTBR - 1024) / 8; 
+currentPCB = READY_LIST + 32 * currentPID;
+
+//-------------------- EXEC SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+
+if(sysCallNo == 9) then
+	
+	//print "Exec s/m call";
+	
+	// Get the argument filename into registers
+	filename = [physicalSP - 3];
+	
+	// search for filename in FAT entry
+	i = 0;
+	flag = -1;
+	
+	while(i < 64) do
+		if([FAT + i*8] == filename) then
+			flag = 0;
+			break;
+		endif;
+		i = i+1;
+	endwhile;
+	
+	if(flag == -1) then
+		print "File not found";
+		[physicalSP - 2] = -1;
+		ireturn;
+	endif;
+	
+	newfat = i*8 + FAT;
+	
+	//--------------------------------------------------------------
+	// store context in PCB
+	
+	[ currentPCB + 2 ] = BP;
+	[ currentPCB + 3 ] = SP - 1; // Ignore IP pushed by Timer int routine
+	[ currentPCB + 4 ] = [ physicalSP ]; // Save IP of current process in the PCB from the stack
+	
+	// Saving vals of regs into pcb
+
+	[ currentPCB + 7 ] = R0;
+	[ currentPCB + 8 ] = R1;
+	[ currentPCB + 9 ] = R2;
+	[ currentPCB + 10 ] = R3;
+	[ currentPCB + 11 ] = R4;
+	[ currentPCB + 12 ] = R5;
+	[ currentPCB + 13 ] = R6;    
+	[ currentPCB + 14 ] = R7;
+
+	//--------------------------------------------------------------
+	
+	i = 0;
+	
+	stackMem = [PTBR + 2*(PTLR-1)];
+	
+	while(i < PTLR) do
+			
+			aux = [PTBR + 2*i + 1]; 
+			
+			if([PTBR + 2*i] != -1) then
+				
+				old_pg = [PTBR + 2*i];
+				
+				//If valid pg in mem , swap it	
+				if(aux == "01" || aux == "11") then
+					//..............................................
+						
+						j = 24;
+						
+						flag = -1;
+						
+						while(j < 512) do
+							if([DISK_LIST + j] == 0) then
+								flag = 0;
+								break;
+							endif;
+							j = j +1;	
+						endwhile;	
+						
+						if(flag == -1) then
+							print "Exec swap err";
+							[physicalSP - 2] = -1;
+							ireturn;
+						endif;
+						
+						store(old_pg,j);
+						
+						[MEM_LIST + old_pg] = [MEM_LIST + old_pg] - 1;
+						
+						[DISK_LIST + j] = 101;
+						
+						[PTBR + 2*i] = j;
+						[PTBR + 2*i + 1] = "00";
+						
+					//..............................................
+				endif;
+			
+			endif;
+		
+			i = i+1;	
+	
+	endwhile;
+	
+	// Commit Dfl back 
+	store(6,20);
+	
+	//------------------------------------------------------------------
+	//Find a space for swapping PCB and page table
+	
+	i = 0;
+	flag = -1;
+	
+	load(1,510);
+	
+	while(i<64) do
+		
+		if([512 + i*8] == -2) then 
+			flag = 0;
+			break;
+		endif;
+		
+		i = i+1;
+	endwhile;
+	
+	if(flag == -1) then
+		load(1,511);
+		i = 0;
+		while(i<64) do
+			
+			if([512 + i*8] == -2) then 
+				flag = 0;
+				i = i+64;
+				break;
+			endif;
+			
+			i = i+1;
+		endwhile;
+		
+	endif;
+	
+	if(flag == -1) then
+		// store back stack and return -1;
+		alias stackBl S14;
+		
+		print "DS error";
+		
+		stackBl = [PTBR + 6];
+		[DISK_LIST + stackBl] = 0;
+		
+		[MEM_LIST + stackMem] = 1;
+		
+		[PTBR + 6] = stackMem;
+		[PTBR + 7] = "01";
+		
+		// Commit Dfl back 
+		store(6,20);
+	
+		[physicalSP - 1] = -1;
+		ireturn;
+	endif;
+	
+	// i has index
+	
+	//----------------------------------------------------------------
+	// swap Page table
+	
+	alias orig_i S13;
+	
+	orig_i = i;
+	
+	i = i % 64;
+	
+	load(1,510+(orig_i/64));
+	
+	j = 0;
+	
+	while(j<8) do
+		[512 + i*8 + j] = [PTBR + j];
+		j = j+1;
+	endwhile;
+	
+	store(1,510+(orig_i/64));
+	
+	breakpoint;
+	
+	//----------------------------------------------------------------
+	// swap PCB
+	
+	i = orig_i % 16;
+	
+	load(1,502+(orig_i/16));
+	
+	j = 0;
+	
+	while(j<32) do
+		[512 + i*32 + j] = [currentPCB + j];
+		j = j+1;
+	endwhile;
+	
+	store(1,502+(orig_i/16));
+	
+	[currentPCB] = currentPID + ((orig_i +1) * 1000);
+	
+	breakpoint;	
+	//----------------------------------------------------------------------------------
+		
+	// Close all files opened by the current process by following the steps in Close() system call.
+	
+	alias fd S15;
+	alias sys_ft_index S14;
+	
+	fd = 0;
+	
+	while(fd < 8) do
+	
+		//check if s/m wide open FT in fd is -1(invalid)
+		
+		sys_ft_index = [currentPCB + 15 + fd*2 ];
+		
+		if(sys_ft_index != -1) then
+			
+			// modify per proc FT 	
+			
+			[currentPCB + 15 + fd*2 + 0] = -1;
+			[currentPCB + 15 + fd*2 + 1] = -1;
+		
+		endif;
+		
+		fd = fd + 1;
+	endwhile;
+	
+	//--------------------------------------------------------------
+	// set up PTBR
+	
+	// fetch the basic block of this file and place it in the scratchpad.
+	
+	load(1,[newfat + 2]);
+	
+	i = 0;
+	
+	while(i<3) do
+		[PTBR + 2*i] = [512 + i];
+		[PTBR + 2*i + 1 ] = "00";
+		i = i + 1;	 
+	endwhile;
+	
+	[PTBR + 6] = stackMem;
+	[PTBR + 7] = "01";
+	[MEM_LIST + stackMem] = 1;
+	  
+	//--------------------------------------------------------------
+	
+	SP = 3*512;
+	
+	physicalSP = ([PTBR + 2 * (SP / 512)] * 512) + (SP % 512);
+	
+	[physicalSP] = 0;
+	
+	ireturn;
+	
+endif;
+
+//-------------------- GETPID SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+if(sysCallNo == 11) then
+	
+	print "getpid s/m call";
+	
+	[physicalSP - 2] = currentPID;
+	
+	ireturn;
+endif;
+
+//-------------------- GETPPID SYSTEM CALL --------------------------
+//------------------------------------------------------------------
+if(sysCallNo == 12) then
+	
+	print "Getppid s/m call";
+	
+	[physicalSP - 2] = [currentPCB + 31];
+	
+	ireturn;
+	
+endif;
